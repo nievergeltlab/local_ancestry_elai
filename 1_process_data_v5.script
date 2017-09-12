@@ -1,0 +1,699 @@
+#Theo's data on the omni 2.5 markers is called 
+#theo2mil.bed/bim/fam
+
+#Get genetic map data for b37
+#wget http://www.shapeit.fr/files/genetic_map_b37.tar.gz
+
+#Note: ALicias native american referenc came from here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1867104/
+#According to their page here: ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/working/20140818_ancestry_deconvolution/README_20140721_phase3_ancestry_deconvolution
+
+
+
+#Prior to conversion to rfmix, must concatenate legend and hap.gz files for KGP
+for i in {1..22}
+do
+ paste -d " " <(zcat 1000GP_Phase3/1000GP_Phase3_chr${i}.legend.gz | awk -v chr=$i 'NR>1{print chr,$1,$2,$3,$4}') <(gzip -d -c 1000GP_Phase3/1000GP_Phase3_chr${i}.hap.gz) > 1000GP_Phase3/1000GP_Phase3_chr${i}.haps
+ gzip 1000GP_Phase3/1000GP_Phase3_chr${i}.haps
+done
+
+#For Alicia's script, have made .ref files for 1000g subjects and for admixed subjects
+#.ref should be a single ID
+awk '{if ($3 == "EUR") print $1}' 1000GP_Phase3/1000GP_Phase3.sample > 1000g_eur.ref
+awk '{if ($3 == "AFR" && $2 != "ACB" && $2 != "ASW" ) print $1}' 1000GP_Phase3/1000GP_Phase3.sample > 1000g_afr.ref
+cat 1000g_eur.ref 1000g_afr.ref  > 1000g_eur_afr.ref
+
+
+#note: .keep files should be formatted like .fam files
+awk '{print $1, $1, "0", "0", "0","-9"}' 1000g_eur_afr.ref > 1000g_eur_afr.keep
+awk '{print $1, $1, "0", "0", "0","-9"}' 1000g_eur.ref > 1000g_eur.keep
+awk '{print $1, $1, "0", "0", "0","-9"}' 1000g_afr.ref > 1000g_afr.keep
+cat  1000g_eur.keep  1000g_afr.keep > 1000g_eur_afr.keep
+
+#Get the rs names from KGP phase 3, which are stupid, and divine a rename list from them
+zcat 1000GP_Phase3/1000GP_Phase3_chr*.legend.gz | awk '{print $1}' | grep rs > 1000GP_Phase3_allchr.markers
+awk 'BEGIN{FS=":"} {print $1,$1":"$2":"$3":"$4}' 1000GP_Phase3_allchr.markers | sort -k 1,1b -u > 1000GP_Phase3_allchr.snprename
+
+#Also get a list of new positions, sorting to only unique rs-ids ( a few rs map to multiple)
+awk 'BEGIN{FS=":"} {print $1,$2}' 1000GP_Phase3_allchr.markers | sort -k 1,1b -u  > 1000GP_Phase3_allchr.poschange
+
+
+#Find the ambiguous markers in Theo's data
+grep -P "A\tT" theo2mil.bim  > tf/ambiguous_snps.txt
+grep -P "T\tA" theo2mil.bim >> tf/ambiguous_snps.txt
+grep -P "C\tG" theo2mil.bim >> tf/ambiguous_snps.txt
+grep -P "G\tC" theo2mil.bim >> tf/ambiguous_snps.txt
+
+#Update the names and positions of Theo markers. Convert Theo data to tped, split by chromosome, update the positions 
+#Duplicate markers are actually e.g. tri allelic or are indels
+
+cut -f 2 theo2mil.bim | uniq -d > theo2mil.notunique
+
+./plink --bfile theo2mil --exclude theo2mil.notunique --make-bed --out tf/theo2mil_v2
+./plink --bfile tf/theo2mil_v2 --update-map 1000GP_Phase3_allchr.poschange --exclude ambiguous_snps.txt  --make-bed --out tf/theo2mil_v3
+./plink --bfile tf/theo2mil_v3 --update-name 1000GP_Phase3_allchr.snprename --make-bed --out tf/theo2mil_v4
+
+
+#Split by chromosome
+for chr in {1..22}
+do
+ ./plink --bfile tf/theo2mil_v4 --chr $chr  --make-bed --out tf/theo2mil_v5_"$chr"
+done
+
+#Finally get rid of duplicate positions
+R
+for (chr in c(1:22))
+{
+ a = read.table(paste("tf/theo2mil_v5_",chr,".bim",sep = ""),header=FALSE,stringsAsFactors=F)
+ b = a[duplicated(a$V4),]
+ write.table(b,file=paste("tf/theo2mil_v5_",chr,".snpexclude",sep = ""),sep=" ",quote = FALSE,col.names = FALSE, row.names=FALSE)
+ print(paste(dim(b)[1], "deleted for chr", chr))
+}
+ q("no")
+
+for chr in {1..22}
+do
+ ./plink --bfile tf/theo2mil_v5_"$chr" --exclude tf/theo2mil_v5_"$chr".snpexclude --write-snplist --make-bed --out tf/theo2mil_v6_"$chr"
+done
+
+#Create a PLINK dummy file for 1000G data denoting the allele codes, will flip based on this
+for chr in 6 #  {1..22}
+do 
+ zcat 1000GP_Phase3/1000GP_Phase3_chr"$chr".legend.gz | awk -v chr=$chr 'NR>1{print chr,$1,"0",$2,$3,$4}' > tf/1000GP_Phase3_chr"$chr".legend.tped
+ echo "" | awk '{print "kgpdummy","kgpdummy","0","0","1","-9"}' > tf/1000GP_Phase3_chr"$chr".legend.tfam
+ ./plink --tfile tf/1000GP_Phase3_chr"$chr".legend --make-bed --extract tf/theo2mil_v6_"$chr".bim  --out tf/1000GP_Phase3_chr"$chr".legend
+done
+
+#FLip the allele codes to match misaligned data. If flipping fails to work, exclude markers
+for chr in 6 # {1..22}
+do
+ ./plink --bfile tf/theo2mil_v6_"$chr" --bmerge tf/1000GP_Phase3_chr"$chr".legend.bed tf/1000GP_Phase3_chr"$chr".legend.bim tf/1000GP_Phase3_chr"$chr".legend.fam --make-bed --out tf/theo2mil_v7_"$chr"
+ ./plink --bfile tf/theo2mil_v6_"$chr" --flip tf/theo2mil_v7_"$chr"-merge.missnp --make-bed --out tf/theo2mil_v8_"$chr"
+ ./plink --bfile tf/theo2mil_v8_"$chr" --bmerge tf/1000GP_Phase3_chr"$chr".legend.bed tf/1000GP_Phase3_chr"$chr".legend.bim tf/1000GP_Phase3_chr"$chr".legend.fam --make-bed --out tf/theo2mil_v9_"$chr"
+ if [ -f tf/theo2mil_v9_"$chr"-merge.missnp ]
+ then
+  ./plink --bfile tf/theo2mil_v8_"$chr" --exclude tf/theo2mil_v9_"$chr"-merge.missnp --make-bed --out tf/theo2mil_v10_"$chr"
+  ./plink --bfile tf/theo2mil_v10_"$chr" --bmerge tf/1000GP_Phase3_chr"$chr".legend.bed tf/1000GP_Phase3_chr"$chr".legend.bim tf/1000GP_Phase3_chr"$chr".legend.fam --make-bed --out tf/theo2mil_v11_"$chr"
+ else 
+  ./plink --bfile tf/theo2mil_v9_"$chr" --make-bed --out tf/theo2mil_v11_"$chr"
+ fi
+#We also set the A1 allele here to the KGP A1 allele
+  zcat 1000GP_Phase3/1000GP_Phase3_chr"$chr".legend.gz | awk '{print $1,$3}' > tf/1000GP_Phase3_chr"$chr".legend.refallele
+ ./plink --bfile tf/theo2mil_v11_"$chr" --extract tf/1000GP_Phase3_chr"$chr".legend.bim --remove tf/1000GP_Phase3_chr"$chr".legend.tfam --a1-allele tf/1000GP_Phase3_chr"$chr".legend.refallele --geno 0.01 --maf 0.0000000000001  --make-bed --out tf/theo2mil_v12_"$chr"
+done
+
+#Submit array of phase jobs (all chromosomes is -t 1-22)
+qsub -t 1-22 scripts/shapeit.pbs -F "-g tf/theo2mil_v12 -r 1000GP_Phase3/1000GP_Phase3 "
+
+
+qsub -t 6 scripts/shapeit.pbs -F "-g tf/theo2mil_v12 -r 1000GP_Phase3/1000GP_Phase3 -e  theo2mil_v12_6_mhc.region"
+
+qsub -t 6 scripts/shapeit_noref.pbs -F "-g tf/theo2mil_v12 "
+
+#Special thinned version of chr 6 
+ ./plink --bfile tf/theo2mil_v12_6 --thin .1 --make-bed --out tf/thin_theo2mil_v12_6
+
+qsub -t 6 scripts/shapeit.pbs -F "-g tf/thin_theo2mil_v12 -r 1000GP_Phase3/1000GP_Phase3"
+
+
+#Need to make a population file
+awk '{print $1 }' tf/theo2mil_v12_21.fam > tf/theo2mil_v12.ref
+cp  tf/theo2mil_v12_21.fam  tf/theo2mil_v12.sample
+
+
+awk 'NR<=750{print $1}' tf/theo2mil_v12.ref > tf/theo2mil_v12_for6_p1.ref
+awk 'NR>750{print $1}' tf/theo2mil_v12.ref > tf/theo2mil_v12_for6_p2.ref
+
+#Convert data to rfmix format  {1..22}
+for i in 6 # {1..22}; 
+do python ancestry_pipeline-master/shapeit2rfmix.py \
+--shapeit_hap_ref 1000GP_Phase3/1000GP_Phase3_chr${i}.haps.gz \
+--shapeit_hap_admixed tf/theo2mil_v12_${i}.haps.gz \
+--shapeit_sample_ref 1000GP_Phase3/1000GP_Phase3.sample3 \
+--shapeit_sample_admixed tf/theo2mil_v12_${i}.sample \
+--ref_keep 1000g_eur_afr.ref \
+--admixed_keep tf/theo2mil_v12.ref \
+--chr ${i} \
+--genetic_map genetic_map_b37/genetic_map_chr${i}_combined_b37.txt \
+--out theo2mil_eur_afr; done
+
+
+##Fix classes
+python ancestry_pipeline-master/classes.py \
+--ref 1000g_eur.keep,1000g_afr.keep \
+--sample theo2mil_eur_afr.sample \
+--out CEU_YRI_THEO.classes
+
+#Will do 6, excluding the MHC..
+28,477,797-33,448,354
+28420000 33500000
+./plink --bfile tf/theo2mil_v12_"$chr" --chr 6 --from-bp 28420000 --to-bp 33500000 --write-snplist --out mhc_snps
+./plink --bfile tf/theo2mil_v12_"$chr" --extract mhc_snps.snplist --make-bed --out theo2mil_v12_"$chr"_mhc
+awk '{print $4}' theo2mil_v12_"$chr"_mhc.bim > theo2mil_v12_"$chr"_mhc.region
+
+
+for i in  6 # {17..22}; 
+do 
+python RunRFMix.py PopPhased \
+-w 0.2 \
+--num-threads 8 \
+--forward-backward \
+theo2mil_eur_afr_chr"$i".alleles \
+CEU_YRI_THEO.classes \
+theo2mil_eur_afr_chr"$i".snp_locations \
+--use-reference-panels-in-EM  \
+-o trio_theo_eur_afr_chr${i}.rfmix & 
+sleep 6000
+ done
+# PopPhased  \
+
+#Special for c6 (had to split into 2 files)
+ python ancestry_pipeline-master/shapeit2rfmix.py \
+--shapeit_hap_ref 1000GP_Phase3/1000GP_Phase3_chr6.haps.gz \
+--shapeit_hap_admixed tf/theo2mil_v12_6.haps.gz \
+--shapeit_sample_ref 1000GP_Phase3/1000GP_Phase3.sample3 \
+--shapeit_sample_admixed tf/theo2mil_v12_6.sample \
+--ref_keep 1000g_eur_afr.ref \
+--admixed_keep tf/theo2mil_v12_for6_p1.ref \
+--chr 6 \
+--genetic_map genetic_map_b37/genetic_map_chr6_combined_b37.txt \
+--out theo2mil_eur_afr_for6_p1
+
+
+ python ancestry_pipeline-master/shapeit2rfmix.py \
+--shapeit_hap_ref 1000GP_Phase3/1000GP_Phase3_chr6.haps.gz \
+--shapeit_hap_admixed tf/theo2mil_v12_6.haps.gz \
+--shapeit_sample_ref 1000GP_Phase3/1000GP_Phase3.sample3 \
+--shapeit_sample_admixed tf/theo2mil_v12_6.sample \
+--ref_keep 1000g_eur_afr.ref \
+--admixed_keep tf/theo2mil_v12_for6_p2.ref \
+--chr 6 \
+--genetic_map genetic_map_b37/genetic_map_chr6_combined_b37.txt \
+--out theo2mil_eur_afr_for6_p2
+
+python ancestry_pipeline-master/classes.py \
+--ref 1000g_eur.keep,1000g_afr.keep \
+--sample theo2mil_eur_afr_for6_p1.sample \
+--out CEU_YRI_THEO_c6p1.classes
+
+python ancestry_pipeline-master/classes.py \
+--ref 1000g_eur.keep,1000g_afr.keep \
+--sample theo2mil_eur_afr_for6_p2.sample \
+--out CEU_YRI_THEO_c6p2.classes
+
+
+python RunRFMix.py PopPhased  \
+-w 0.2 \
+--num-threads 8 \
+--forward-backward \
+theo2mil_eur_afr_for6_p1_chr6.alleles \
+CEU_YRI_THEO_c6p1.classes \
+theo2mil_eur_afr_for6_p1_chr6.snp_locations \
+--use-reference-panels-in-EM  \
+-o theo_eur_afr_chr6_p1.rfmix  &
+
+
+
+python RunRFMix.py PopPhased  \
+-w 0.2 \
+--num-threads 8 \
+--forward-backward \
+theo2mil_eur_afr_for6_p2_chr6.alleles \
+CEU_YRI_THEO_c6p2.classes \
+theo2mil_eur_afr_for6_p2_chr6.snp_locations \
+--use-reference-panels-in-EM  \
+-o theo_eur_afr_chr6_p2.rfmix  &
+
+
+
+
+#Qsub not effective, best time to run next rfmix command is actually mid way into previous
+#qsub -t 1-22 scripts/rfmix.pbs -F "-c CEU_YRI_THEO -a theo2mil_eur_afr -e 0 "
+#qsub -t 7-22 scripts/rfmix.pbs -F "-c CEU_YRI_THEO -a theo2mil_eur_afr -e 0 "
+
+
+#Split each file into N subsets
+#Viterbi files have 2*N columns (2 per subject)
+#FB have 4*N columns (4 per subject)
+
+#Starting point should be when my subjects go in, which is line 1008
+#Translating this then it should be 1 + (2015-1)/2 = 1008 and 1 + (4029-1)/4 = 1008
+#Lines 2015 and 4029
+#Hard coded for now
+
+### Fix up the FB data
+
+##Transpose FB data
+
+#Transpose script for chr 1..12 FB data, which need to be split up specially prior to working
+for chr in 6 # 1 2 3 4 5 7 8 9 10 11 12
+do
+
+   cut -d " " -f1-1500 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part1.rfmix.0.ForwardBackward.txt
+   cut -d " " -f1501-3000 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part2.rfmix.0.ForwardBackward.txt
+   cut -d " " -f3001-4500 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part3.rfmix.0.ForwardBackward.txt
+   cut -d " " -f4501-6000 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part4.rfmix.0.ForwardBackward.txt
+   cut -d " " -f6001-7500 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part5.rfmix.0.ForwardBackward.txt
+   cut -d " " -f7501-9000 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part6.rfmix.0.ForwardBackward.txt
+   cut -d " " -f9001-10392 theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/theo_eur_afr_chr"$chr"_part7.rfmix.0.ForwardBackward.txt
+
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part1.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part1.rfmix.0.ForwardBackward.txt
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part2.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part2.rfmix.0.ForwardBackward.txt
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part3.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part3.rfmix.0.ForwardBackward.txt
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part4.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part4.rfmix.0.ForwardBackward.txt
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part5.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part5.rfmix.0.ForwardBackward.txt
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part6.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part6.rfmix.0.ForwardBackward.txt
+   python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr"_part7.rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr"_part7.rfmix.0.ForwardBackward.txt
+
+   rm -rf p1/theo_eur_afr_chr"$chr"_part*.rfmix.0.ForwardBackward.txt
+  # gzip theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt
+done
+
+
+#Transpose script for chr 13..22 data
+for chr in {13..22}
+do
+ python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p1/theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt > p1/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt
+ #gzip theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt
+done
+
+##Split the FB data
+
+#Split chr 1..12 FB data by subject, which need to have a different starting point for each chunk
+
+for chr in  1 2 3 4 5 6 7 8 9 10 11 12
+do
+ for chunk in {1..7}
+ do
+  numstart=$(((chunk-1)*375 + 1))
+  echo $numstart
+  split -a 4 --numeric-suffixes=$numstart -l 4  p1/transpose_theo_eur_afr_chr"$chr"_part"$chunk".rfmix.0.ForwardBackward.txt p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.
+  gzip p1/transpose_theo_eur_afr_chr"$chr"_part"$chunk".rfmix.0.ForwardBackward.txt
+ done
+done
+
+#Split chr 13..22 data by subject
+for chr in {13..22}
+do
+ gzip -d p1/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt
+ split -a 4 --numeric-suffixes=1 -l 4  p1/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.
+ gzip p1/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt
+done
+
+for subj in $(seq -w 1 1 1007)
+do
+ for chr in {1..22}
+ do
+  rm -f p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward."$subj"
+ done
+done
+
+#Then need to transpose back all data...
+for subj in $(seq -w 1008  1 2598)
+do
+ for chr in {1..22}
+ do
+  python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward."$subj" > p4/theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward."$subj"
+  gzip p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward."$subj"
+ done
+done
+
+
+###Fix up Viterbi data
+
+##Transpose Viterbi data
+
+#Transpose chr 1-22 except 6
+
+for chr in  {1..22}
+do
+ 
+ #python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt > p2/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt
+ gzip -d p2/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt
+done
+
+
+##Split Viterbi data
+
+for chr in {1..22}
+do
+ split -a 4 --numeric-suffixes=1 -l 2  p2/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi.
+ gzip p2/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt
+done
+
+## Transpose it back
+for subj in $(seq -w 1008  1 2598)
+do
+ for chr in {1..22}
+ do
+  python -c "import sys; print('\n'.join(' '.join(c) for c in zip(*(l.split() for l in sys.stdin.readlines() if l.strip()))))" < p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi."$subj" > p4/theo_eur_afr_chr"$chr".rfmix.0.Viterbi."$subj"
+  gzip p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt."$subj"
+ done
+done
+
+for subj in $(seq -w 1 1 1007)
+do
+ for chr in {1..22}
+ do
+  rm -f p3/transpose_theo_eur_afr_chr"$chr".rfmix.0.Viterbi."$subj"
+ done
+done
+
+#Collapse ancestry into .bed files
+rm -f theobed_list.txt
+rm -f theoind_list.txt
+
+#1008 2598
+for subj in $(seq -w 1008  1 1107)
+do
+ subname=$(awk -v linenum=$subj 'NR == linenum{print}' theo2mil_eur_afr.sample)
+ echo $subname > tf/"$subname".txt
+ 
+ python ancestry_pipeline-master/collapse_ancestry.py \
+ --rfmix p4/theo_eur_afr_chr"$chr".rfmix.0.Viterbi."$subj" \
+ --snp_locations theo2mil_eur_afr_chr1.snp_locations \
+ --fbk p4/theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward."$subj" \
+ --fbk_threshold 0.9 \
+ --ind $subname \
+ --ind_info tf/"$subname".txt \
+ --pop_labels EUR,AFR \
+ --out subjs_collapse/"$subname" 
+
+ python ancestry_pipeline-master/plot_karyogram.py \
+ --bed_a subjs_collapse/"$subname"_A.bed \
+ --bed_b subjs_collapse/"$subname"_B.bed \
+ --ind subjs_collapse/"$subname" \
+ --out subjs_collapse/"$subname".png
+ echo "subjs_collapse/$subname"_A.bed "subjs_collapse/$subname"_B.bed >> theobed_list.txt
+ echo "subjs_collapse/$subname" >> theoind_list.txt
+
+done
+
+python ancestry_pipeline-master/lai_global.py --bed_list theobed_list.txt --ind_list theoind_list.txt --pops EUR,AFR --out theo_lai_global_test.txt
+
+split -a 2 --numeric-suffixes=1 -l 20 theoind_list.txt  theoinds_test1_
+
+for i in $(ls theoinds_test1_*)
+do
+ python ancestry_pipeline-master/lai_global.py --bed_list theobed_list.txt --ind_list $i --pops EUR,AFR --out theo_lai_global_$i
+done
+
+
+
+bed_list_${POP}.txt \
+ ${POP}.inds \
+
+for POP in ASW; do python ancestry_pipeline-master/lai_global.py \
+--bed_list bed_list_${POP}.txt \
+--ind_list ${POP}.inds \
+--pops EUR,AFR \
+--out lai_global_${POP}.txt; done
+
+
+
+
+
+#Do an ancestry test run
+
+ head -n1  theo2mil_eur_afr.sample_noref > 187526012.txt
+for i in {1..22}
+do
+ cut -d " " -f 1-4 fixed_theo2mil_eur_afr_chr"$i".rfmix.0.ForwardBackward.txt > 187526012_fixed_theo2mil_eur_afr_chr"$i".rfmix.0.ForwardBackward.txt
+ cut -d " " -f 1-2 fixed_theo2mil_eur_afr_chr"$i".rfmix.0.Viterbi.txt > 187526012_fixed_theo2mil_eur_afr_chr"$i".rfmix.0.Viterbi.txt
+done
+
+for i in {1..22}
+do
+ cut -d " " -f 584-587 fixed_theo2mil_eur_afr_chr"$i".rfmix.0.ForwardBackward.txt > 187521111_fixed_theo2mil_eur_afr_chr"$i".rfmix.0.ForwardBackward.txt
+ cut -d " " -f 293-294 fixed_theo2mil_eur_afr_chr"$i".rfmix.0.Viterbi.txt > 187521111_fixed_theo2mil_eur_afr_chr"$i".rfmix.0.Viterbi.txt
+done
+
+echo "187521111" > 187521111.txt
+
+
+
+IND='T187521111'; python ancestry_pipeline-master/plot_karyogram.py \
+--bed_a ${IND}_A.bed \
+--bed_b ${IND}_B.bed \
+--ind ${IND} \
+--out ${IND}.png
+
+
+for POP in SHI; do python ancestry_pipeline-master/lai_global.py \
+--bed_list bed_list_${POP}.txt \
+--ind_list ${POP}.inds \
+--pops EUR,AFR \
+--out lai_global_${POP}.txt; done
+
+
+
+
+#Hypothesis: All SNPs are correlated - chr 6 gets no more ld prunning than otherwise
+
+##Do LD pruning on chr 6
+ $plink_location --bfile "$bfile_directory"/"$bfile"  --out temporary_files/"$bfile"_ibd
+./plink --bfile tf/theo2mil_v12_6  --maf 0.05 --geno 0.02 --mind 0.02 --indep-pairwise 50 5 0.2 --out chr6ibd
+
+ $plink_location --bfile "$bfile_directory"/"$bfile"  --out temporary_files/"$bfile"_ibd
+./plink --bfile tf/theo2mil_v12_5  --maf 0.05 --geno 0.02 --mind 0.02 --indep-pairwise 50 5 0.2 --out chr5ibd
+
+#Hypothesis: all subjects are related - No, chr 6 only gives 46 relatds.
+
+./plink --bfile tf/theo2mil_v12_6 --extract chr6ibd.prune.in --genome --min 0.5 --out chr6rel
+
+IBD on chr 5 and chr 6, compare level of relatedness...
+
+#Hypothesis: Original file was bad - PC1 v PC2 DOES look bad relative to the others!!!
+./plink --bfile tf/chr6_original/theo2mil_v12_6 --pca header tabs --out test_chr6_mds
+./plink --bfile tf/theo2mil_v12_5 --pca header tabs --out test_chr5_mds
+./plink --bfile tf/theo2mil_v12_4 --pca header tabs --out test_chr4_mds
+./plink --bfile tf/theo2mil_v12_1 --pca header tabs --out test_chr1_mds
+
+R
+dat6 <-read.table('test_chr6_mds.eigenvec', header=T,stringsAsFactors=F)
+dat5 <-read.table('test_chr5_mds.eigenvec', header=T,stringsAsFactors=F)
+dat4 <-read.table('test_chr4_mds.eigenvec', header=T,stringsAsFactors=F)
+dat1 <-read.table('test_chr1_mds.eigenvec', header=T,stringsAsFactors=F)
+
+par(mfrow=c(1,4))
+plot(dat6$PC1,dat6$PC2)
+plot(dat5$PC1,dat5$PC2)
+plot(dat4$PC1,dat4$PC2)
+plot(dat1$PC1,dat1$PC2)
+
+
+par(mfrow=c(1,4))
+plot(dat6$PC2,dat6$PC3)
+plot(dat5$PC2,dat5$PC3)
+plot(dat4$PC2,dat4$PC3)
+plot(dat1$PC2,dat1$PC3)
+
+#Do PC plot of the original genotype data for each chr
+
+./plink --bfile theo2mil --chr 6 --pca header tabs --out test_orig_chr6
+./plink --bfile theo2mil --chr 5 --pca header tabs --out test_orig_chr5
+./plink --bfile theo2mil --chr 4 --pca header tabs --out test_orig_chr4
+./plink --bfile theo2mil --chr 1 --pca header tabs --out test_orig_chr1
+
+R
+dat6 <-read.table('test_orig_chr6.eigenvec', header=T,stringsAsFactors=F)
+dat5 <-read.table('test_orig_chr5.eigenvec', header=T,stringsAsFactors=F)
+dat4 <-read.table('test_orig_chr4.eigenvec', header=T,stringsAsFactors=F)
+dat1 <-read.table('test_orig_chr1.eigenvec', header=T,stringsAsFactors=F)
+
+par(mfrow=c(1,4))
+plot(dat6$PC1,dat6$PC2)
+plot(dat5$PC1,dat5$PC2)
+plot(dat4$PC1,dat4$PC2)
+plot(dat1$PC1,dat1$PC2)
+
+#LD prune each and see what happens
+
+./plink --bfile theo2mil --chr 6 --indep-pairwise 50 5 0.2 --out chr6ibd
+./plink --bfile theo2mil --extract chr6ibd.prune.in --chr 6 --pca header tabs --out test_orig_chr6_ld
+
+
+./plink --bfile theo2mil --chr 5  --indep-pairwise 50 5 0.2 --out chr5ibd
+./plink --bfile theo2mil --extract chr5ibd.prune.in --chr 5 --pca header tabs --out test_orig_chr5_ld
+
+./plink --bfile theo2mil --chr 4  --indep-pairwise 50 5 0.2 --out chr5ibd
+./plink --bfile theo2mil --extract chr5ibd.prune.in --chr 4 --pca header tabs --out test_orig_chr4_ld
+
+
+R
+dat6 <-read.table('test_orig_chr6_ld.eigenvec', header=T,stringsAsFactors=F)
+dat5 <-read.table('test_orig_chr5_ld.eigenvec', header=T,stringsAsFactors=F)
+dat4 <-read.table('test_orig_chr4_ld.eigenvec', header=T,stringsAsFactors=F)
+
+par(mfrow=c(1,3))
+plot(dat6$PC1,dat6$PC2)
+plot(dat5$PC1,dat5$PC2)
+plot(dat4$PC1,dat4$PC2)
+
+
+#LD pruning the data is sufficient to fix the problem. 
+
+#Is excluding MHC sufficient?
+
+./plink --bfile theo2mil    --chr 6  --from-bp 28420000  --out mhc_snps_oldids  --to-bp 33500000  --write-snplist 
+
+
+./plink --bfile theo2mil --chr 6 --exclude  mhc_snps_oldids.snplist --pca header tabs --out test_orig_chr6_nomhc
+
+R
+dat6 <-read.table('test_orig_chr6_nomhc.eigenvec', header=T,stringsAsFactors=F)
+dat6A <-read.table('test_orig_chr6.eigenvec', header=T,stringsAsFactors=F)
+
+par(mfrow=c(1,2))
+plot(dat6$PC1,dat6$PC2)
+
+plot(dat6A$PC1,dat6A$PC2)
+
+#Conclusion; The PC plots are wrong, but they are wrong because of the MHC region. Removing the MHC region didn't affect my local ancestry inference.
+
+#Q: Is there a way to evaluate the heteorzygosity of phased data?
+#Make a similarity matrix between subjects for chr 5 and for chr 6, using the same metric
+
+
+#I recreated chr 6. See ifi t matches original - it does...
+
+./plink --bfile tf/theo2mil_v12_6 --bmerge tf/chr6_original/theo2mil_v12_6.bed tf/chr6_original/theo2mil_v12_6.bim tf/chr6_original/theo2mil_v12_6.fam --merge-mode 6 --out testchr6
+
+#Show that MHC wont help
+
+nomhc_theo2mil_v12_6.haps.gz
+
+
+#Convert data to rfmix format  {1..22}
+for i in 6 # {1..22}; 
+do python ancestry_pipeline-master/shapeit2rfmix.py \
+--shapeit_hap_ref 1000GP_Phase3/1000GP_Phase3_chr${i}.haps.gz \
+--shapeit_hap_admixed tf/selfdone_theo2mil_v12_${i}.haps.gz \
+--shapeit_sample_ref 1000GP_Phase3/1000GP_Phase3.sample3 \
+--shapeit_sample_admixed tf/nomhc_theo2mil_v12_${i}.sample \
+--ref_keep 1000g_eur_afr.ref \
+--admixed_keep tf/theo2mil_v12.ref \
+--chr ${i} \
+--genetic_map genetic_map_b37/genetic_map_chr${i}_combined_b37.txt \
+--out selfdone_theo2mil_eur_afr; done
+
+
+for i in 6 #  {17..19}; 
+do 
+python RunRFMix.py PopPhased \
+-w 0.2 \
+--num-threads 8 \
+--forward-backward \
+selfdone_theo2mil_eur_afr_chr"$i".alleles \
+CEU_YRI_THEO.classes \
+selfdone_theo2mil_eur_afr_chr"$i".snp_locations \
+--use-reference-panels-in-EM  \
+-o selfdone_theo_eur_afr_chr${i}.rfmix & 
+#sleep 2000
+ done
+
+gzip -d tf/selfdone_theo2mil_v12_${i}.haps.gz
+
+
+beagle2vcf.jar.txt tf/selfdone_theo2mil_v12_${i}.haps 
+
+
+
+#Run the thinned data
+
+#Convert data to rfmix format  {1..22}
+for i in 6 # {1..22}; 
+do python ancestry_pipeline-master/shapeit2rfmix.py \
+--shapeit_hap_ref 1000GP_Phase3/1000GP_Phase3_chr${i}.haps.gz \
+--shapeit_hap_admixed tf/thin_theo2mil_v12_${i}.haps.gz \
+--shapeit_sample_ref 1000GP_Phase3/1000GP_Phase3.sample3 \
+--shapeit_sample_admixed tf/nomhc_theo2mil_v12_${i}.sample \
+--ref_keep 1000g_eur_afr.ref \
+--admixed_keep tf/theo2mil_v12.ref \
+--chr ${i} \
+--genetic_map genetic_map_b37/genetic_map_chr${i}_combined_b37.txt \
+--out thin_theo2mil_eur_afr; done
+
+
+for i in 6 #  {17..19}; 
+do 
+python RunRFMix.py PopPhased \
+-w 0.2 \
+--num-threads 8 \
+--forward-backward \
+thin_theo2mil_eur_afr_chr"$i".alleles \
+CEU_YRI_THEO.classes \
+thin_theo2mil_eur_afr_chr"$i".snp_locations \
+--use-reference-panels-in-EM  \
+-o thin_theo_eur_afr_chr${i}.rfmix & 
+#sleep 2000
+ done
+
+
+for subname in  176444839 176444426 176437369 176444389 176444396
+do
+ python ancestry_pipeline-master/collapse_ancestry.py \
+ --rfmix theo_eur_afr_chr"$chr".rfmix.0.Viterbi.txt \
+ --snp_locations theo2mil_eur_afr_chr1.snp_locations \
+ --fbk theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward.txt \
+ --fbk_threshold 0.9 \
+ --ind $subname \
+ --ind_info tf/"$subname".txt \
+ --pop_labels EUR,AFR \
+ --out subjs_collapse/"$subname" 
+
+ python ancestry_pipeline-master/plot_karyogram.py \
+ --bed_a subjs_collapse/"$subname"_A.bed \
+ --bed_b subjs_collapse/"$subname"_B.bed \
+ --ind subjs_collapse/"$subname" \
+ --out subjs_collapse/"$subname".png
+ echo "subjs_collapse/$subname"_A.bed "subjs_collapse/$subname"_B.bed >> theobed_list.txt
+ echo "subjs_collapse/$subname" >> theoind_list.txt
+
+done
+
+python ancestry_pipeline-master/lai_global.py --bed_list theobed_list.txt --ind_list theoind_list.txt --pops EUR,AFR --out theo_lai_global_test.txt
+
+
+176444839 # 1105 European
+176444426 # 1078 European
+
+176437369 # 1008 AAM with bad chr 6
+176444389 # 1045 AAM with bad chr 6
+176444396 # 1052 AAM with bad chr 6
+
+
+
+rm -f theobed_list.txt
+rm -f theoind_list.txt
+
+#1008 2598
+for subj in $(seq -w 1008  1 2598)
+do
+ subname=$(awk -v linenum=$subj 'NR == linenum{print}' theo2mil_eur_afr.sample)
+ echo $subname > tf/"$subname".txt
+ 
+ #python ancestry_pipeline-master/collapse_ancestry.py \
+ #--rfmix p4/theo_eur_afr_chr"$chr".rfmix.0.Viterbi."$subj" \
+ #--snp_locations theo2mil_eur_afr_chr1.snp_locations \
+ #--fbk p4/theo_eur_afr_chr"$chr".rfmix.0.ForwardBackward."$subj" \
+ #--fbk_threshold 0.9 \
+ #--ind $subname \
+ #--ind_info tf/"$subname".txt \
+ #--pop_labels EUR,AFR \
+ #--out subjs_collapse/"$subname" 
+
+ #python ancestry_pipeline-master/plot_karyogram.py \
+ #--bed_a subjs_collapse/"$subname"_A.bed \
+ #--bed_b subjs_collapse/"$subname"_B.bed \
+ #--ind subjs_collapse/"$subname" \
+ #--out subjs_collapse/"$subname".png
+ echo "subjs_collapse/$subname"_A.bed "subjs_collapse/$subname"_B.bed >> theobed_list.txt
+ echo "subjs_collapse/$subname" >> theoind_list.txt
+
+done
+
+awk 'NR >=1008 {print "subjs_collapse/"$1"_A.bed", "subjs_collapse/"$1"_B.bed"}'  theo2mil_eur_afr.sample > theobed_list.txt
+awk 'NR >=1008 {print $1 }'  theo2mil_eur_afr.sample > theoind_list.txt
+
+
+python ancestry_pipeline-master/lai_global.py --bed_list theobed_list.txt --ind_list theoind_list.txt --pops EUR,AFR --out theo_lai_global_test.txt

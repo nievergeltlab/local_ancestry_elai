@@ -1,0 +1,42 @@
+#!/bin/bash
+
+while getopts e:c:o:g:t:n: option
+do
+  case "${option}"
+    in
+      e) elai=${OPTARG};;
+      c) chunkfileext=${OPTARG};;
+      o) outfilename=${OPTARG};;
+      g) refgenopath=${OPTARG};;
+      t) testdatbin=${OPTARG};;
+      n) nodeuse=${OPTARG};;
+    esac
+done
+
+#nodeuse is the number of simultaneous processes to launch. Decrease if memory errors occur
+
+#Total number of job batches = Number of commands (here the number of chunk files) / number of commands used per job, rounded up 
+#Small error: this seems lead to processing chr 23 and d4 as well
+ ncommands=$(wc -l $chunkfileext | awk '{print $1}')
+ totjobs=$((($ncommands + $nodeuse - 1 ) / $nodeuse ))
+
+
+chr=$PBS_ARRAYID
+
+for job in $(seq 1 1 $totjobs)
+do
+ jstart=$((($job-1)*$nodeuse +1))
+ jstop=$(($job*$nodeuse))
+ if [ $jstop -ge $ncommands ]
+ then
+  jstop=$ncommands
+ fi
+ #add  -w 10 -s 0  for linear approx
+ for i in  $(seq $jstart 1 $jstop)
+ do
+   infile=$(awk 'BEGIN{FS="_"}{print $NF}' $chunkfileext | awk -v line=$i 'NR==line{print $1}')
+  $elai -g "$refgenopath"/1000g_eur_ch"$chr".recode.geno.txt -p 10 -g "$refgenopath"/1000g_afr_ch"$chr".recode.geno.txt -p 11 -g "$testdatbin"_"$infile"_"$chr".recode.geno.txt -p 1 -pos "$refgenopath"/1000g_eur_ch"$chr".recode.pos.txt.fixed  -o "$outfilename"_"$infile"_$chr -C 2 -c 10 -mg 10 -R 1717 -w 10 -s 0  -sem "$infile"_$chr -exclude-maf 0.01 --exclude-miss1 &
+ done
+wait
+done
+

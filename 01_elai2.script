@@ -1,0 +1,276 @@
+#### File handling
+
+#Prior to conversion to rfmix, must concatenate legend and hap.gz files for KGP
+
+#List subjects from populations I want
+#.ref should be a single ID
+# awk '{if ($3 == "EUR") print $1,$1}' 1000g/1000GP_Phase3.sample > 1000g_eur.ref
+# awk '{if ($3 == "AFR" && $2 != "ACB" && $2 != "ASW" ) print $1,$1}' 1000g/1000GP_Phase3.sample > 1000g_afr.ref
+# awk '{if ($2 == "PEL"  ) print $1,$1}' 1000g/1000GP_Phase3.sample > 1000g_nat.ref
+
+mkdir tf
+
+#Find the ambiguous markers in Theo's data
+grep -P "A\tT" pts_gtpc_mix_am-qc.bim  > tf/ambiguous_snps.txt
+grep -P "T\tA" pts_gtpc_mix_am-qc.bim >> tf/ambiguous_snps.txt
+grep -P "C\tG" pts_gtpc_mix_am-qc.bim >> tf/ambiguous_snps.txt
+grep -P "G\tC" pts_gtpc_mix_am-qc.bim >> tf/ambiguous_snps.txt
+
+#Update the names and positions of Theo markers. Convert Theo data to tped, split by chromosome, update the positions 
+#Duplicate markers are actually e.g. tri allelic or are indels
+
+cut -f 2 pts_gtpc_mix_am-qc.bim | uniq -d > pts_gtpc_mix_am-qc.notunique
+
+./plink --bfile pts_gtpc_mix_am-qc --exclude pts_gtpc_mix_am-qc.notunique --make-bed --out tf/pts_gtpc_mix_am-qc_v2
+
+awk '{if (length($5) == 1 && length($6) == 1) print $2}' tf/pts_gtpc_mix_am-qc_v2.bim > uni_allelic.snplist
+
+#Split by chromosome
+for chr in {1..22}
+do
+ ./plink --bfile tf/pts_gtpc_mix_am-qc_v2 --chr $chr  --extract uni_allelic.snplist --make-bed --out tf/pts_gtpc_mix_am-qc_v5_$chr
+done
+
+#Get rid of duplicate positions if they are still there
+R
+for (chr in c(1:22))
+{
+ a = read.table(paste("tf/pts_gtpc_mix_am-qc_v5_",chr,".bim",sep = ""),header=FALSE,stringsAsFactors=F)
+ b = a[duplicated(a$V4),]
+ write.table(b,file=paste("tf/pts_gtpc_mix_am-qc_v5_",chr,".snpexclude",sep = ""),sep=" ",quote = FALSE,col.names = FALSE, row.names=FALSE)
+ print(paste(dim(b)[1], "deleted for chr", chr))
+}
+ q()
+n
+
+#split fam file up, we'll work in pieces of 500 to speed this up
+splitsize=500
+echo "Splitting .fam file"
+awk '{print $1,$2}' tf/pts_gtpc_mix_am-qc_v2.fam | split  -l $splitsize -d - gtp_famsplit_
+
+ls gtp_famsplit_* > gtp_famsplit.txt
+
+#Exclude duplicate positions. Reformat data for bimbam
+for chr in {1..22}
+do
+
+ #./plink --bfile tf/pts_gtpc_mix_am-qc_v5_"$chr" --exclude tf/pts_gtpc_mix_am-qc_v5_"$chr".snpexclude --write-snplist --make-bed --out tf/pts_gtpc_mix_am-qc_v6_"$chr"
+ #./plink --bfile  tf/pts_gtpc_mix_am-qc_v6_"$chr" --bmerge /mnt/sdb/genetics/ancestry_pipeline_elai/tf/theo2mil_v6_"$chr".bed /mnt/sdb/genetics/ancestry_pipeline_elai/tf/theo2mil_v6_"$chr".bim  /mnt/sdb/genetics/ancestry_pipeline_elai/tf/theo2mil_v6_"$chr".fam --make-bed --out theo2mil_v6_"$chr"_flip
+
+  #./plink --bfile  tf/pts_gtpc_mix_am-qc_v6_"$chr" --flip  theo2mil_v6_"$chr"_flip-merge.missnp --make-bed --out tf/theo2mil_v6_"$chr"_flip
+
+
+ # awk '{print $2,$5}' tf/theo2mil_v6_"$chr"_flip.bim > tf/pts_gtpc_mix_am-qc_v6_"$chr".refalleles
+  ./plink --bfile tf/theo2mil_v6_"$chr"_flip --keep gtp_africans.subjects --snps-only just-acgt --reference-allele tf/pts_gtpc_mix_am-qc_v6_"$chr".refalleles  --recodeA --out pts_gtpc_aam_am-qc_v6_"$chr"
+ done
+ 
+ for i in $(seq -w 0 1 14)
+ do
+ #Exclude multi allelic markers, recode to bimbam
+ #./plink --bfile tf/pts_gtpc_mix_am-qc_v6_"$chr" --keep gtp_famsplit_$i --snps-only just-acgt --recode-bimbam --out pts_gtpc_mix_am-qc_v6_"$i"_"$chr"
+ 
+ #Take common variants under an additive model, setting the reference allele --note that there may still be strand issues between datasets!!
+ 
+ ./plink --bfile tf/theo2mil_v6_"$chr"_flip --keep gtp_famsplit_$i --snps-only just-acgt --reference-allele tf/pts_gtpc_mix_am-qc_v6_"$chr".refalleles  --recodeA --out pts_gtpc_mix_am-qc_v6_"$i"_"$chr"
+ 
+
+ done
+done
+
+#strand check diagnostic stuff
+ awk '{if($17 == "aam") print $15,$16}' /mnt/sdb/genetics/theoanc/ancestry/ancestry_missing_set_to_ref2.predpc_oneweek.header > aams_theo.list
+ 
+ plink2 --bfile /mnt/sdb/genetics/ancestry_pipeline_elai/tf/theo2mil_v6_"$chr" --reference-allele /mnt/sdb/genetics/gradyanc/tf/pts_gtpc_mix_am-qc_v6_"$chr".refalleles  --keep aams_theo.list --freq --snp rs7204268 --out rs7204268_frqt
+   ./plink --bfile  tf/pts_gtpc_mix_am-qc_v6_"$chr" --reference-allele /mnt/sdb/genetics/gradyanc/tf/pts_gtpc_mix_am-qc_v6_"$chr".refalleles  --freq --snp rs7204268  --out rs7204268_frq
+    ./plink --bfile  /mnt/sdb/genetics/ancestry_pipeline_elai/theo2mil   --keep aams_theo.list  --freq --snp rs9793779  --out rs9793779_frqt_orig
+ 
+ cat *.results | sort -g -r -k 7 | awk '{if ($7 >= .1) print $8,$7}' |  grep -v beta | sed 's/\"//g' | LC_ALL=C sort -k1b,1  > bad_alleles.txt
+ join -1 1 -2 1 <(awk '{print $2}' ../tf/ambiguous_snps.txt | LC_ALL=C sort -k1b,1 )  bad_alleles.txt >  bad_alleles_unambig.txt
+ 
+#Convert 1000G to PLINK to BIMBAM
+
+#Recode data to bimbam, 
+for chr in {1..22}
+do
+ #plink2 --vcf 1000g/ALL.chr"$chr".phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz  --make-bed --out 1000g_chr"$chr"
+
+ #Extract Theo markers only, and only acgt ones
+ plink2 --bfile 1000g_chr"$chr" --extract  tf/pts_gtpc_mix_am-qc_v6_"$chr".bim --snps-only just-acgt --make-bed --out 1000g_chr"$chr"_fix
+
+ #Extract each population
+ plink2 --bfile 1000g_chr"$chr"_fix --keep  1000g_eur.ref --recode-bimbam --out 1000g_eur_ch"$chr"
+ plink2 --bfile 1000g_chr"$chr"_fix --keep  1000g_afr.ref --recode-bimbam --out 1000g_afr_ch"$chr"
+ plink2 --bfile 1000g_chr"$chr"_fix --keep  1000g_nat.ref --recode-bimbam --out 1000g_nat_ch"$chr"
+
+ #Write out a file of positions in the right format (choice of using EU was arbitrary)
+ awk -v chr=$chr 'BEGIN{FS=" " ; OFS=","} {print $1,$2, chr}' 1000g_eur_ch"$chr".recode.pos.txt > 1000g_eur_ch"$chr".recode.pos.txt.fixed
+
+done
+
+#Submit a job for each chromosome
+
+#Add -w 10 -s 0 for a quick look using linear approximation
+
+elai=/mnt/sdb/genetics/ancestry_pipeline_elai/elai/elai-lin
+
+nodeuse=6
+workingdir=$(pwd)
+
+chr=11
+chunk=07
+$elai -g /mnt/sdb/genetics/ancestry_pipeline_elai/1000g_eur_ch"$chr".recode.geno.txt -p 10 -g /mnt/sdb/genetics/ancestry_pipeline_elai/1000g_afr_ch"$chr".recode.geno.txt -p 11 -g pts_gtpc_mix_am-qc_v6_"$chunk"_"$chr".recode.geno.txt -p 1 -pos /mnt/sdb/genetics/ancestry_pipeline_elai/1000g_eur_ch"$chr".recode.pos.txt.fixed  -o rgtp_quad_"$chunk"_"$chr" -C 2 -c 10 -mg 10 -R 17   -w 10 -s 0  -sem $chr -exclude-maf 0.01  &
+
+
+ qsub elai.pbs -lwalltime=10:00:00 -t1-22 -d $workingdir  -e errandout/ -o errandout/ -F "-e $elai -c gtp_famsplit.txt -o gtp_realquad -g /mnt/sdb/genetics/ancestry_pipeline_elai/ -t  pts_gtpc_mix_am-qc_v6 -n $nodeuse"
+
+
+###Basic Comparison: Can obtain overall ancestry estimate by taking the lenght weighted average of all chr in the .admix.txt files
+grady_famfile <- read.table('/mnt/sdb/genetics/ancestry_pipeline_elai/pts_gtpc_mix_am-qc.fam', header=F)
+
+gradyanc <- read.table('/mnt/sdb/genetics/gradyanc/ancestry/ancestry_missing_set_to_ref2.predpc_oneweek.header',header=T)
+rfmix <- read.table('rfmix_results.txt')
+names(rfmix) <- c("FID","pop1","pop2")
+chrlengths <- read.table('chr_lengths.txt',header=T)
+
+chr6 <- read.table('output/linear/grady_linear_c2_6.admix.txt',header=F)
+chr8 <- read.table('output/linear/grady_linear_c28.admix.txt',header=F)
+chr9 <- read.table('output/linear/grady_linear_c29.admix.txt',header=F)
+
+new_props <- (chr6*chrlengths[which(chrlengths$chr == "chr6"),]$bp + chr8*chrlengths[which(chrlengths$chr == "chr8"),]$bp + chr9*chrlengths[which(chrlengths$chr == "chr9"),]$bp ) / sum(chrlengths[which(chrlengths$chr %in% c("chr6","chr8","chr9")),]$bp)
+
+new_props2 <- cbind(grady_famfile[,1], new_props)
+names(new_props2) <- c("FID","pop1_elai","pop2_elai")
+
+compare0 <- merge(rfmix,new_props2,by="FID")
+compare <- merge(compare0, gradyanc,by="FID")
+
+compare_small <- subset(compare, bestpop_oneweek == "aam")
+
+cor.test(compare_small$pop1,compare_small$pop1_elai)
+cor.test(compare_small$africa,compare_small$pop2_elai)
+cor.test(compare_small$africa,compare_small$pop2)
+
+
+#Convert subject ancestry calls to switches
+#Files such as grady_linear_c2_1.ps21.txt have 1521 rows. That means there are 2 columns per SNP. I will make the first column file "A" and second file "B"
+#Load in the SNP lengths
+
+#Get length of starting SNP and ancestry. Compare next SNP. Once there is a switch, note the position of the previous marker, 
+
+
+ library(data.table)
+
+#Load family file to know positions of subjects in data
+ grady_famfile <- read.table('/mnt/sdb/genetics/ancestry_pipeline_elai/pts_gtpc_mix_am-qc.fam', header=F,stringsAsFactors=F)
+
+#Load SNP positions
+ positions_c21 <- fread("output/linear/grady_linear_c2_21.snpinfo.txt", header=T,data.table=F)[,1:3]
+
+#Load Local ancestry from elai
+ dat <- fread("output/linear/grady_linear_c2_21.ps21.txt", header=F,data.table=F)
+
+#Load positions (maybe just concatenate all of them??)
+ #cat output/linear/grady_linear_c2_*.snpinfo.txt | awk '{if (NR == 1 || $1 != "rs") print $1,$2,$3 }' > allchr.snpinfo.txt
+
+ #positions <- fread("allchr.snpinfo.txt", header=T,data.table=F)
+ positions <- positions_c21
+
+ pos_use1 <- positions[,1:3]
+ pos_use <- pos_use1[order(pos_use1$chr,pos_use1$pos,decreasing=F),]
+
+#Load a sample subject 
+ s1a <- read.table('/mnt/sdb/genetics/ancestry_pipeline_gradydata/subjs_collapse/176444424_A.bed',header=F,stringsAsFactors=F)
+ names(s1a)[1:4] <- c("chr","start","stop","pop")
+ s1a[which(s1a$pop == "AFR"),]$pop <-2 
+ s1a[which(s1a$pop == "EUR"),]$pop <-1 
+ s1a[which(s1a$pop == "UNK"),]$pop <-1.5 #Set unknown to 1.5, the unconditional expected value 
+ s1a$pop <- as.numeric(s1a$pop)
+
+ s1b <- read.table('/mnt/sdb/genetics/ancestry_pipeline_gradydata/subjs_collapse/176444424_B.bed',header=F,stringsAsFactors=F)
+ names(s1b)[1:4] <- c("chr","start","stop","pop")
+ s1b[which(s1b$pop == "AFR"),]$pop <-2 
+ s1b[which(s1b$pop == "EUR"),]$pop <-1 
+ s1b[which(s1b$pop == "UNK"),]$pop <-1.5 #Set unknown to 1.5, the unconditional expected value 
+ s1b$pop <- as.numeric(s1b$pop)
+
+#Make a data frame for this subject
+ use <- pos_use
+
+#Identify where in elai data subject is
+ sa <- which(grady_famfile[,2] == "176444424")
+
+#For this one subject,get his african ancesrty count
+ dat2 <- dat[sa,seq(2,dim(dat)[2],by=2)]
+
+#Add in his african count at each allele
+ afr_count <- as.numeric(dat2[1,])
+ use$afr_count <- afr_count
+
+##Get expected value of alleles from rfmix
+
+#Code variables for the rfmix populations
+ use$pop1 <- NA
+ use$pop2 <- NA
+
+ s1a <- subset(s1a, chr %in% pos_use$chr) #Delete once I have full positiona info!
+ s1b <- subset(s1b, chr %in% pos_use$chr) #Delete once I have full positiona info!
+
+#Get the RFmix ancestries
+  for (switch in 1:dim(s1a)[1])
+  {
+   pos_to_set <- which(use$chr == s1a[switch,]$chr & use$pos >= s1a[switch,]$start & use$pos <= s1a[switch,]$stop)
+   pop_to_set<- s1a[switch,]$pop
+   use[pos_to_set,]$pop1 <- pop_to_set
+  }
+  for (switch in 1:dim(s1b)[1])
+  {
+   pos_to_set <- which(use$chr == s1b[switch,]$chr & use$pos >= s1b[switch,]$start & use$pos <= s1b[switch,]$stop)
+   pop_to_set<- s1b[switch,]$pop
+   use[pos_to_set,]$pop2 <- pop_to_set
+  }
+
+#
+test1 <- merge(positions_c21,use,by="rs")
+test1$rfmix <- (test1$pop1 + test1$pop2) / 2 #Average of populations is ancestry
+
+cor.test(test1$rfmix,test1$afr_count)
+
+
+
+
+
+
+head -n3 pts_gtpc_mix_am-qc_v6_22.recode.geno.txt   | tail -n1 | sed 's/,/\n/g'  > pts_gtpc_mix_am-qc.subs
+
+#Average out admixture estimates for all subjects...
+
+paste output/*.admix.txt > admixtest.txt
+
+R
+dat1 <- read.table('admixtest.txt',header=F)
+afrest <- dat1[,seq(2,dim(dat1)[2],by=2)]
+eurest <- dat1[,seq(1,dim(dat1)[2],by=2)]
+
+write.table(apply(afrest,1,mean),'afr_estimates.txt',quote=F,row.names=F)
+
+range(apply(afrest,1,mean))
+
+#Check out SNP info files to see if distribution of chr 6 is weird
+c6 <- read.table('output/grady_linear_c2_6.snpinfo.txt',header=T)
+c12 <- read.table('output/grady_linear_c212.snpinfo.txt',header=T)
+
+#MAfs are same
+quantile(c6$maf)
+quantile(c12$maf,na.rm=T)
+
+#Missingness similar
+quantile(c6$miss,seq(0,1,.1))
+quantile(c12$miss,na.rm=T,seq(0,1,.1))
+
+#N quantiles almost exactly match
+quantile(c6$n2,seq(0,1,.1))
+quantile(c12$n2,na.rm=T,seq(0,1,.1))
+
+#N histrograms are the same basically
+hist(c6$n2)
+hist(c12$n2)
