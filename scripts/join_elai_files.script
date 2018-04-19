@@ -1,0 +1,37 @@
+args <- commandArgs(trailingOnly = TRUE)
+ study <- args[1] #study name
+ chr <- args[2]
+ #Join all datasheets per study
+ #study=gtpc
+ 
+ datasheets <- system(paste("cd output ; ls ", study, "_v4e_*_",chr,".ps21.header.aam.txt",sep=""),intern=TRUE)
+ 
+ library(data.table)
+ library(plyr)
+ 
+#read each file into a data frame with the same name
+for (i in datasheets)
+{
+	assign(
+		i, fread(paste('output/',i,sep=''))
+		) 
+}
+
+#parse the text list of data frame names as a list of data frames
+data_list <- eval( 
+			parse( 
+				text=paste(
+					"list(", paste(datasheets, collapse=','), ")" 
+					)
+				)
+			)
+
+
+#combine all data frames by id_visit (won't work for subjects missing this variable!!!!!)
+data_combined <- rbind.fill(data_list)
+
+save(data_combined, file=paste("output/", study, "_v4e_", chr,".ps21.header.aam.R",sep=""))
+#write.table(data_combined, paste("output/", study, "_v4e_",chr,".ps21.header.aam.txt",sep=""), quote=F,row.names=F)
+
+ 
+ 

@@ -1,0 +1,53 @@
+#For Alicia's script, have made .ref files for 1000g subjects
+#Note how ACB and ASW admixed subjects are removed!
+#.ref should be a single ID
+ awk '{if ($3 == "EUR") print $1}' 1000gref/1000GP_Phase3.sample > 1000g_eur.ref
+ awk '{if ($3 == "AFR" && $2 != "ACB" && $2 != "ASW" ) print $1}' 1000gref/1000GP_Phase3.sample > 1000g_afr.ref
+ cat 1000g_eur.ref 1000g_afr.ref  > 1000g_eur_afr.ref
+
+ #Make .haps file for rfmix ( needs chr, snp, position, a0 and a1 alleles)
+ for i in {1..22}
+do
+ paste -d " " <(zcat 1000gref/1000GP_Phase3_chr${i}.legend.gz | awk -v chr=$i 'NR>1{print chr,$1,$2,$3,$4}') <(zcat  1000gref/1000GP_Phase3_chr${i}.hap.gz) > 1000gref/1000GP_Phase3_chr${i}.haps
+ gzip 1000GP_Phase3/1000GP_Phase3_chr${i}.haps
+done
+
+
+
+#note: .keep files for the pipeline should be formatted like .fam files
+ awk '{print $1, $1, "0", "0", "0","-9"}' 1000g_eur_afr.ref > 1000g_eur_afr.keep
+ awk '{print $1, $1, "0", "0", "0","-9"}' 1000g_eur.ref > 1000g_eur.keep
+ awk '{print $1, $1, "0", "0", "0","-9"}' 1000g_afr.ref > 1000g_afr.keep
+
+#Get the rs names from KGP phase 3 data by splitting at the : character in the names
+ zcat 1000gref/1000GP_Phase3_chr*.legend.gz | awk '{print $1}' | grep rs > 1000gref/1000GP_Phase3_allchr.markers
+ awk 'BEGIN{FS=":"} {print $1,$1":"$2":"$3":"$4}' 1000gref/1000GP_Phase3_allchr.markers | sort -k 1,1b -u > 1000gref/1000GP_Phase3_allchr.snprename
+
+#Also get a list of marker positions, sorting to only unique rs-ids (a few rs map to multiple positions)
+ awk 'BEGIN{FS=":"} {print $1,$2}' 1000gref/1000GP_Phase3_allchr.markers | sort -k 1,1b -u  > 1000gref/1000GP_Phase3_allchr.poschange
+
+#Create a PLINK dummy file for 1000G data denoting the allele codes, will flip alleles based on this
+ for chr in 13 # {1..22}
+ do 
+  zcat "$refdir"/1000GP_Phase3_chr"$chr".legend.gz | awk -v chr=$chr 'NR>1{print chr,$1,"0",$2,$3,$4}' > 1000GP_Phase3_chr"$chr".legend.tped
+  echo "" | awk '{print "kgpdummy","kgpdummy","0","0","1","-9"}' > 1000GP_Phase3_chr"$chr".legend.tfam
+  $ploc --tfile 1000GP_Phase3_chr"$chr".legend --make-bed  --out 1000gref/1000GP_Phase3_chr"$chr".legend
+  rm -f 1000GP_Phase3_chr"$chr".legend.tped
+ done
+ 
+ #Make a SNP name sorted version of the .haps file
+ 
+  zcat "$refdir"/1000GP_Phase3_chr"$chr".haps.gz | LC_ALL=C sort -k2b,2 | gzip > "$refdir"/1000GP_Phase3_chr"$chr".haps.sorted.gz
+ 
+###Sort the .haps file from kgp website
+#First convert the file to .haps.gz format
+bcftools-1.6/bcftools convert ALL.chr13.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz --gensample ALL.chr"$chr".phase3_shapeit2_mvncall_integrated_v5a.20130502
+
+#Rename to .haps.gz insetead of .gen.gz
+
+#Then sort it 
+
+  zcat "$refdir"/ALL.chr13.phase3_shapeit2_mvncall_integrated_v5a.20130502.haps.gz | LC_ALL=C sort -k2b,2 | gzip > "$refdir"/ALL.chr13.phase3_shapeit2_mvncall_integrated_v5a.20130502.haps.sorted.gz
+ 
+ 
+ #For 

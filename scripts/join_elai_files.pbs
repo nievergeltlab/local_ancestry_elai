@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -lnodes=1:ppn=1
+
+while getopts c: option
+do
+  case "${option}"
+    in
+
+      c) chr=${OPTARG};;
+     esac
+done
+     
+      
+module load R
+for study in wrby gsdc cogb comc dnhs grac meg2 mrsc nss1 nss2 psy3 pts1 stro fscd gtpc  # NEED TO DO # Study loop
+do
+
+ echo doing $study
+ Rscript scripts/join_elai_files.script $study $chr &
+done
+
+wait

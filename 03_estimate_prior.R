@@ -4,18 +4,28 @@ library(data.table)
 
 ##Estimate teh number of switches for each subject on each chromosome
 
+study="shiley_350"
 
 lat_color <- rgb(230,185,184,max=255)
 eur_color <- rgb(147,205, 221,max=255)
 afr_color <- rgb(179,162,199,max=255)
 afr_color_sig <- rgb(255,162,199,max=255)
 
+study="adages_cleaner"
 
 #Load overall admixture proportions (SNPweights AIMs panelk estimates)
-anc <- read.table('ancestry_missing_set_to_ref2.predpc_oneweek.header',header=T)
-phenotypes <- read.table("/mnt/sdb/genetics/ancestry_pipeline_elai/glaucoma_shiley_jun26.pheno",header=T,stringsAsFactors=F,na.strings=c("NA","#N/A"))
+anc <- read.table('ancestry/adages_cleaner.predpc_oneweek.header',header=T)
+ancx <- read.table('results/adages_cleaner_global.ancestry',header=T)
 
-subs <- read.table('tf/theo2mil_v6B_5.fam',header=F)
+anct <- merge(anc,ancx,by=c("FID","IID"))
+summary(lm(africa ~ global_african,data=anct)) #High correspondence between veriones
+
+
+
+phenotypes <- read.csv("jerry_glaucoma.csv",header=T,stringsAsFactors=F,na.strings=c("NA","#N/A"))
+names(phenotypes)[1] <- "FID"
+
+subs <- read.table('adages_cleaner.fam',header=F)
 names(subs)[c(1:2)] <- c("FID","IID")
 
 subs$order <- 1:dim(subs)[1]
@@ -25,30 +35,47 @@ anc2 <- merge(phenotypes,anc1,by=c("FID"),all.y=TRUE)
 anc3 <- anc2[order(anc2$order),]
 
 #i'm going to look at glaucoma only subjects and add a covariate 
-africans <- which(anc3$bestpop_oneweek=="aam" & anc3$Diagnosis == "Glaucoma") # anc3$Site_of_Sample_Preparation
+africans <- which(anc3$bestpop_oneweek=="aam" & anc3$expected_group == "GLAUCOMA") # anc3$Site_of_Sample_Preparation
+#africans <- which(anc3$best >= 0.15 & anc3$expected_group == "GLAUCOMA") # anc3$Site_of_Sample_Preparation
+
+afrcov <- anc3[africans,]
+
 #Need to load position info
+
 
 efsizessum <- rep(0,length(africans))
 
-for (chr in c(c(8:22))) #c("_1","_2","_3","_4","_5","_6","_7")
+for (chr in c(c(1:22))) 
 {
-
+print(chr)
 #Load Local ancestry
-dat <- fread(paste("output/theo_linear_c2",chr,".ps21.txt",sep=''), header=F,data.table=F)
+ load(paste("output/",study,"_v4e_",chr,".ps21.header.aam.R",sep=""))
+ dat <- data_combined
 
 #Load positions
-positions <- fread(paste("output/theo_linear_c2",chr,".snpinfo.txt",sep=''), header=T,data.table=F)
+ positions=paste("output/",study,"_v4e_00_", chr,".snpinfo.txt",sep="") 
+ posa <- fread(positions,data.table=F)
+ pos_subset <- subset(posa,select=c(rs,pos,chr,maf))
+ 
 
-dat_afr <- dat[africans,seq(2,dim(dat)[2],by=2)]
-
+#Make dataframes for each ancestry
+ dat_afr <- dat[africans,-c(1:2)] #[africans,seq(2,dim(dat)[2],by=2)]
+ dat_afr <- dat_afr[, which(names(dat_afr) %in% pos_subset$rs)]
+ dat_afr <- round(dat_afr,0)
+ 
 #Make into a time series object
-ts1 <- mcmc(t(dat_afr))
+ ts1 <- mcmc(t(dat_afr))
+
+#Impute missing values
+ts2 <- t(apply(ts1,1,function(x) {
+  if(is.numeric(x)) ifelse(is.na(x),median(x,na.rm=T),x) else x}))
+ 
 
 #Get effective swithc N for each
-efsizes <- effectiveSize(ts1)
+efsizes <- effectiveSize(ts2)
 
 efsizessum <- efsizessum + efsizes
-write.table(efsizes, paste('efsizes/',chr,"_.efsizes",sep=""))
+write.table(efsizes, paste('results/',chr,"_.efsizes",sep=""))
 
 }
 

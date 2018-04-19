@@ -1,0 +1,265 @@
+#Get genetic map data for b37
+#wget http://www.shapeit.fr/files/genetic_map_b37.tar.gz
+
+#Note: MHC is chr 6 28,477,797-33,448,354
+
+#First extract the segment from the genotyped data
+#Then extract from the imputed data
+
+
+#Convert 1000g data to PLINK format
+# for chr in {1..22}
+# do
+ # $ploc --vcf 1000gref/ALL.chr"$chr".phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz  --make-bed --out 1000gref/1000g_chr"$chr"
+# done
+
+qsub -t 1-22 convert_1000g.pbs -d $workingdir -e errandout/ -o errandout/ -lwalltime=00:15:00 
+
+
+#Specify working directory (error logs will go here)
+ workingdir=/home/cnieverg/shiley_anc
+ cd $workingdir
+ 
+#PLINK binary local
+ ploc=/home/cnieverg/ricopili/plink2beta46/plink
+ 
+#Elai binary 
+ eloc=/home/cnieverg/local_ancestry/elai/elai-lin
+ 
+#Specify where 1000g references are located
+ refdir=/home/cnieverg/shiley_anc/1000gref/
+ 
+ if [ ! -d "errandout" ]; then
+  mkdir errandout
+ fi
+ if [ ! -d "tf" ]; then
+  mkdir tf
+ fi
+
+ #note: adages cleaner has duplicate markers renamed
+ 
+ R
+ library(data.table)
+ combined_snps <- fread('found.snplist',data.table=F)
+ names(combined_snps) <- "SNP"
+ 
+ 
+ 
+###Now do analysis stuff
+
+for study in  adages_cleaner # Study loop 
+do #Study loop
+
+
+#QCed PLINK data location
+ bfile_path=/home/cnieverg/shiley_anc
+ bfile="$study"
+ 
+#List all ambiguous markers in the study
+
+#Exclude duplicated rs-ids
+ cut -f 2 "$bfile_path"/"$bfile".bim | uniq -d > tf/"$study".notunique
+ $ploc --bfile "$bfile_path"/"$bfile" --exclude tf/"$study".notunique --make-bed --out tf/"$study"_v1e
+ 
+ 
+#Exclude ambiguous markers
+ grep -P "A\tT" "$bfile_path"/"$bfile".bim  > tf/"$study"_ambiguous_snps.txt
+ grep -P "T\tA" "$bfile_path"/"$bfile".bim >> tf/"$study"_ambiguous_snps.txt
+ grep -P "C\tG" "$bfile_path"/"$bfile".bim >> tf/"$study"_ambiguous_snps.txt
+ grep -P "G\tC" "$bfile_path"/"$bfile".bim >> tf/"$study"_ambiguous_snps.txt
+ grep -P "A T" "$bfile_path"/"$bfile".bim  >> tf/"$study"_ambiguous_snps.txt
+ grep -P "T A" "$bfile_path"/"$bfile".bim >> tf/"$study"_ambiguous_snps.txt
+ grep -P "C G" "$bfile_path"/"$bfile".bim >> tf/"$study"_ambiguous_snps.txt
+ grep -P "G C" "$bfile_path"/"$bfile".bim >> tf/"$study"_ambiguous_snps.txt
+
+ $ploc --bfile tf/"$study"_v1e --exclude tf/"$study"_ambiguous_snps.txt --make-bed --out tf/"$study"_v2e
+ 
+
+#Split genotyped data by chromosome
+ for chr in {1..22}
+ do
+  $ploc --bfile tf/"$study"_v2e --chr $chr  --update-name Multi-EthnicGlobal_B1_b144_rsids.txt --make-bed --out tf/"$study"_v3e_"$chr"
+ done
+#Note duplicate positions (edit back in all chromosomes into .R file if doing all of them)
+ Rscript scripts/rmdups_elai.R $study
+#Exclude duplicate positions. Only retain SNPs. Write a SNPlist of all genotyped SNPs. MAF filter on data 
+ for chr in {1..22}
+ do
+  $ploc --bfile tf/"$study"_v3e_"$chr" --exclude tf/"$study"_v3e_"$chr".snpexclude --write-snplist --allow-no-sex --snps-only just-acgt --make-bed --out tf/"$study"_v4e_"$chr"
+  awk '{print $2}' tf/"$study"_v4e_"$chr".bim > tf/"$study"_v4e_"$chr".bim.snplist
+  
+ done
+ 
+#Reformat rfmix .ref files to plink .keep format
+ awk '{print $1,$1}'  1000g_eur.ref >  1000g_eur.ref2
+ awk '{print $1,$1}'  1000g_afr.ref >  1000g_afr.ref2
+ 
+#Recode 1000g data to bimbam, 
+for chr in  {1..22}
+do
+
+ #Extract study markers only#, and only acgt ones #NOTE Have removed just ACGT option, add back in if this is a problem!
+ $ploc --bfile 1000gref/1000g_chr"$chr" --extract  tf/"$study"_v4e_"$chr".bim.snplist --snps-only just-acgt --write-snplist --make-bed --out tf/1000g_"$study"_chr"$chr"_fix
+
+ #Extract each population
+ $ploc  --bfile tf/1000g_"$study"_chr"$chr"_fix --keep  1000g_eur.ref2 --recode-bimbam --out tf/1000g_eur_"$study"_ch"$chr"
+ $ploc  --bfile tf/1000g_"$study"_chr"$chr"_fix --keep  1000g_afr.ref2 --recode-bimbam --out tf/1000g_afr_"$study"_ch"$chr"
+
+ #Write out a file of positions in the right format (choice of using EU was arbitrary)
+ awk -v chr=$chr 'BEGIN{FS=" " ; OFS=","} {print $1,$2, chr}' tf/1000g_eur_"$study"_ch"$chr".recode.pos.txt > tf/1000g_eur_"$study"_ch"$chr".recode.pos.txt.fixed
+
+done
+
+
+
+#Recode data to bimbam, only taking overlapping markers
+
+
+ #First split data into pieces of 500, to keep process fast
+ splitsize=150
+ nsub=$(wc -l tf/"$study"_v4e_13.fam | awk '{print $1}')
+ nsplit=$((nsub/splitsize))
+ #Identify subjects by FID and IID
+ awk '{print $1,$2}' tf/"$study"_v4e_13.fam > tf/"$study"_v4e.ref 
+ split -a 2 -d -l $splitsize tf/"$study"_v4e.ref tf/"$study"_v4e.ref #Make pieces .ref file of $splitsize
+
+ for chr in  {1..22}
+ do
+  for chunk in $(seq -w 00 1 $nsplit)
+  do
+   $ploc --bfile  tf/"$study"_v4e_"$chr" --keep tf/"$study"_v4e.ref"$chunk" --extract tf/1000g_"$study"_chr"$chr"_fix.snplist --recode-bimbam --out tf/"$study"_v4e_"$chunk"_"$chr"
+  done
+ 
+  
+ done
+ 
+
+
+##Note: check to see if there are MORE positions in elai output than should be, eg for wrby there are 12250 markers, but only 11930 overlap - it is a porblem if output has 12250!
+
+#Submit a job for each chromosome
+
+
+#Submit array of phase jobs (all chromosomes is -t 1-22)
+nodesize=16
+
+maf=0.0 #Maf filters need to be applied beforehand, due to subsetting data!
+mixture_gens=10
+big_c=2
+little_c=10
+random_seed=1717
+lineariter=20
+emiter=0
+
+qsub -t 1-22 scripts/elai2.pbs -d $workingdir -e errandout/ -o errandout/ -lwalltime=02:00:00 -V -F  "-r 1717 -w $lineariter -s $emiter  -g $mixture_gens -c $big_c -d $little_c -t "$study"_v4e -m $maf -p $eloc -x 1000g_eur_"$study" -y 1000g_afr_"$study" -i $nsplit -n $nodesize"
+
+
+done #End study loop
+
+
+###Convert data into one big file
+
+echo "FID IID" > fam.header
+for study in adages_cleaner # NEED TO DO # Study loop
+do #Study loop
+#Make sure these match what were done for the analysis
+
+  splitsize=150
+  nsub=$(wc -l tf/"$study"_v4e_13.fam | awk '{print $1}')
+  nsplit=$((nsub/splitsize))
+ 
+ for chr in {1..22}
+ do
+  for chunk in $(seq -w 00 1 $nsplit)
+  do 
+   cat fam.header tf/"$study"_v4e.ref"$chunk" >  tf/"$study"_v4e.ref"$chunk".header
+   awk 'NR>1{print $1}' output/"$study"_v4e_"$chunk"_"$chr".snpinfo.txt  | perl transpose.pl | tr '\t' ' '  >  output/"$study"_v4e_"$chunk"_"$chr".snplist # Print out list of SNPs to be incldued as a header for the data
+   cat output/"$study"_v4e_"$chunk"_"$chr".snplist  <(awk '{ for (i=1;i<=NF;i+=2) $i="" }1' output/"$study"_v4e_"$chunk"_"$chr".ps21.txt) | paste -d " " tf/"$study"_v4e.ref"$chunk".header - | awk 'BEGIN{OFS=" "} {$1=$1;print $0}'  | tr '\t' ' '   > output/"$study"_v4e_"$chunk"_"$chr".ps21.header.aam.txt
+   echo "dum"
+  done
+   echo "chr$chr" > tf/"$chr".header
+    cat output/"$study"_v4e_*_"$chr".admix.txt | awk '{print $2}' | cat tf/"$chr".header - | awk /./ >  output/"$study"_v4e_"$chr".admix.txt.together #Only print column 2, it's african ancestry
+ done
+done
+
+paste <(cat fam.header <(awk '{print $1,$2}' tf/"$study"_v4e_13.fam)) output/"$study"_v4e_*.admix.txt.together  > output/"$study"_v4e.admix.txt.together.allchr
+
+qsub scripts/join_elai_files.pbs -d $workingdir -e errandout/ -o errandout/ -lwalltime=00:45:00  -F  "-c 6 -s $study"
+
+
+#Join all ancestry average files, producing global average
+#Using file https://genome.ucsc.edu/goldenpath/help/hg19.chrom.sizes
+R 
+ chrs <- read.table("output/adages_cleaner_v4e.admix.txt.together.allchr",stringsAsFactors=F,header=T)
+ sizes <- read.table("chrsizes.txt",stringsAsFactors=F,header=T)
+ sizes <- subset(sizes, chr != "chrX" & chr != "chrY")
+ 
+ sizes2 <- sizes[match(names(chrs)[-c(1:2)], sizes$chr),] # -c(1:2) takes out fid and iid from matching
+ sizesum <- sum(as.numeric(sizes$bp)) #  Total length of genome, about 3 billion bp , minus chr x
+ sizes2$weight <- sizes2$bp/sizesum #weighting factor
+ proportions <- sizes2$weight %*% t(as.matrix(chrs[,-c(1:2)]))
+ 
+ prop_exp <- data.frame(chrs[,c(1,2)],t(proportions))
+ names(prop_exp)[3] <- "global_african"
+ write.table(prop_exp, "results/adages_cleaner_global.ancestry",row.names=F,quote=F)
+q("no")
+
+
+
+ 
+ 
+
+
+#Make a phenotype file (might need to load study specific ones... instead
+for study in wrby gsdc cogb comc dnhs grac meg2 mrsc nss1 nss2 psy3 pts1 stro fscd gtpc  # NEED TO DO # Study loop
+do
+#awk '{print $1"_"$2,$6}'  tf/"$study"_v4e_13.fam >  tf/"$study"_v13.fam.phen
+
+done
+
+
+#For using LANC to do an ancestry stratified association meta analysis
+for study in  ppds   meg2   gsdc cogb comc dnhs grac meg2 mrsc nss1 nss2 psy3 pts1 stro fscd gtpc wrby # NEED TO DO # Study loop
+do
+echo "Doing $study"
+Rscript 2_assoc_controlled_lanc_elai_v2.r $study 157790671 rs34582172  6 6_156_159
+done
+
+rs=rs34582172
+grep African *_"$rs".assoc.txt | grep -v Intercept | awk  '{print $1,$2,$3,$4,$5,$6,$7,$8}' > african3z_"$rs".assoc
+grep Half *_"$rs".assoc.txt | grep -v Intercept | awk  '{print $1,$2,$3,$4,$5,$6,$7,$8}' > half3z_"$rs".assoc
+grep European *_"$rs".assoc.txt | grep -v Intercept | awk  '{print $1,$2,$3,$4,$5,$6,$7,$8}' > european3z_"$rs".assoc
+
+R
+library(metafor)
+african <- read.table('african3z_rs34582172.assoc',header=F,stringsAsFactors=F) # [1:15,]
+names(african)[1:4] <- c("Study","Anc","B","SE")
+african$group <- "AFR"
+
+half <- read.table('half3z_rs34582172.assoc',header=F,stringsAsFactors=F)
+names(half)[1:4] <- c("Study","Anc","B","SE")
+half$group <- "HALF"
+
+euro <- read.table('european3z_rs34582172.assoc',header=F,stringsAsFactors=F)
+names(euro)[1:4] <- c("Study","Anc","B","SE")
+euro$group <- "EURO"
+
+
+#half <- subset(half, Study != "cogbaam.assoc.txt:geno" & Study != "comcaam.assoc.txt:geno"  & Study != "wrbyaam.assoc.txt:geno")
+
+d1 <- rbind(euro,half) # Set to tested groups
+
+rma(yi=african$B,sei=african$SE,method="FE")
+rma(yi=half$B,sei=half$SE,method="FE")
+rma(yi=euro$B,sei=euro$SE,method="FE")
+
+cac <-rma(yi=d1$B,sei=d1$SE,slab=d1$Study,method="FE")
+d2 <- rbind(euro,african,half) # Set to tested groups
+rma(yi=d2$B,sei=d2$SE,slab=d2$Study,method="FE")
+
+pdf('meta_complete.pdf',7,7)
+plot(cac)
+dev.off()
+
+rma(yi=d1[c(6,7),]$B,sei=d1[c(6,7),]$SE,method="FE")
+

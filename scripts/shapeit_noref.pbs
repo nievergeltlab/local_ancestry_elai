@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -lnodes=1:ppn=6
+while getopts g:e: option
+do
+  case "${option}"
+    in
+      g) gwas=${OPTARG};;
+      e) extra=${OPTARG};;
+    esac
+done
+
+#FOr each line in the range file, list all pT.profile files, put them in a list, then run Rscript on it
+
+cd /mnt/sdb/genetics/ancestry_pipeline_theodata
+
+shapeit=/mnt/sdb/genetics/ricopili/shapeit/shapeit.v2.r837.linux.x86_64
+
+if [ -z "$extra"];
+then
+$shapeit -B "$gwas"_"$PBS_ARRAYID" -M genetic_map_b37/genetic_map_chr"$PBS_ARRAYID"_combined_b37.txt  -O "$gwas"_"$PBS_ARRAYID" -T 7 --seed 1717 $extra 
+else 
+$shapeit -B "$gwas"_"$PBS_ARRAYID" -M genetic_map_b37/genetic_map_chr"$PBS_ARRAYID"_combined_b37.txt  -O "$gwas"_"$PBS_ARRAYID" -T 7 --seed 1717 --exclude-snp $extra 
+fi
+
+

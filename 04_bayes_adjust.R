@@ -1,12 +1,14 @@
-cat results/chr*_caseonly_samplesite.results | grep -v regsums > results/all_chr.results
+cat results/chr*_caseonly.results | sed 's/\"//g' | grep -v regsums | awk '{if (NR == 1 || $1 != "rs") print}' > results/all_chr.results
 
 library(data.table)
-results <- fread('results/all_chr.results', header=F,data.table=F)
+results <- fread('results/all_chr.results', header=T,data.table=F)
+
+
 names(results) <- c("rs","pos","chr","maf","P")
 
 #Get Bayes values    
 posterior <- function(x,prior,lambda) {(dchisq(x,1,lambda)*prior)/((dchisq(x,1,lambda)*prior)+(dchisq(x,1,0)*(1-prior)))}
-admixture_burden <- 202 #Estimated 6/27, may need to fix some chrs, estimated using the 03_estimate_prior script
+admixture_burden <- 516 # 516 is hte count estimated by the 700k marker data... #Estimated 6/27, may need to fix some chrs, estimated using the 03_estimate_prior script
 
 admixture_lambda <- (qnorm(1-0.05/admixture_burden/2)+qnorm(0.8))^2
 admixture_prior <- 1/admixture_burden
@@ -75,8 +77,17 @@ out2 <- out
 names(out2)[1] <- "rs"
 out3 <- merge(out2,results,by="rs")
 
+table(subset(out3,bf > .8)$GENESYMBOL)
+head(subset(out3[order(out3$P),],bf > .9)[,c(2,3,9,15)],200)
 
-write.table(names(table(subset(out3,bf > .5)$GENESYMBOL)), 'glaucoma_genes.txt')
+
+write.table(names(table(subset(out3,bf > .9)$GENESYMBOL)), 'glaucoma_genes_nov16.txt')
+
+write.table(names(table(subset(out3,bf > .5)$GENESYMBOL)), 'glaucoma_genes_nov16_bf5.txt')
+
+
+
+
 
   
 #Compare to Khor 2016 PACG

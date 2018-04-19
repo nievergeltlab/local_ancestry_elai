@@ -1,0 +1,20 @@
+#!/bin/bash
+
+while getopts r:g:e:n:o option
+do
+  case "${option}"
+    in
+      r) ref=${OPTARG};;
+      g) gwas=${OPTARG};;
+      e) extra=${OPTARG};;
+      n) nodesize=${OPTARG};;
+      o) outdir=${OPTARG};;
+    esac
+done
+
+
+shapeit=/home/cnieverg/local_ancestry/bin/shapeit
+
+$shapeit -B "$gwas"_"$PBS_ARRAYID" -M 1000gref/genetic_map_chr"$PBS_ARRAYID"_combined_b37.txt --input-ref  "$ref"_chr"$PBS_ARRAYID".hap.gz "$ref"_chr"$PBS_ARRAYID".legend.gz "$ref".sample  -O "$gwas"_"$PBS_ARRAYID" -T $nodesize --seed 1717 $extra 
+
+

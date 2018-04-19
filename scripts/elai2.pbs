@@ -1,0 +1,57 @@
+#!/bin/bash
+#PBS -lnodes=1:ppn=1
+
+while getopts r:w:s:g:c:d:t:m:p:x:y:i:n: option
+do
+  case "${option}"
+    in
+      r) random_seed=${OPTARG};;
+      w) lineariter=${OPTARG};;
+      s) emiter=${OPTARG};;
+      g) mixture_gens=${OPTARG};;
+      c) big_c=${OPTARG};;
+      d) little_c=${OPTARG};;
+      t) testpop=${OPTARG};;
+      m) maf=${OPTARG};;
+      p) elai=${OPTARG};;
+      x) ref1=${OPTARG};;
+      y) ref2=${OPTARG};;
+      i) nsplit=${OPTARG};;
+      n) nodesize=${OPTARG};;
+    esac
+done
+
+echo $testpop is the tes tpop
+
+chr=$PBS_ARRAYID
+jobstart=00 # Start at chunk 00
+jobstop=$nsplit
+
+#Count maximum number of jobs as the number of chunks
+
+#max_jobs=$(wc -l $filelist | awk '{print $1}')
+max_jobs=$(ls tf/"$testpop"_*_"$chr".recode.geno.txt | wc -l | awk '{print $1}'  )
+
+ if [ $jobstop -ge $max_jobs ]
+ then
+  jobstop=$max_jobs
+ fi
+ 
+
+for job in $(seq -w $jobstart $nodesize $jobstop)
+do
+ jstart=$job
+ jstop=$(($job+$nodesize))
+ 
+ if [ $jstop -ge $jobstop ]
+ then
+  jstop=$jobstop
+ fi
+ 
+ for j in $(seq -w $jstart 1 $jstop)
+ do
+  $elai -g tf/"$ref1"_ch"$chr".recode.geno.txt -p 10 -g tf/"$ref2"_ch"$chr".recode.geno.txt -p 11 -g tf/"$testpop"_"$j"_"$chr".recode.geno.txt -p 1 -pos tf/"$ref1"_ch"$chr".recode.pos.txt.fixed  -o "$testpop"_"$j"_$chr -C $big_c -c $little_c -mg $mixture_gens -R $random_seed -sem $chr -exclude-maf $maf -w $lineariter -s $emiter &
+ done
+ wait
+done
+

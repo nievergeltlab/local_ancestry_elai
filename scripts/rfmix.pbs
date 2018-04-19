@@ -1,0 +1,26 @@
+#!/bin/bash
+
+while getopts c:a:e:n: option
+do
+  case "${option}"
+    in
+      c) classes=${OPTARG};;
+      a) alleles=${OPTARG};;
+      e) emit=${OPTARG};;
+      n) nodesize=${OPTARG};;  
+    esac
+done
+
+#export OMP_STACKSIZE=12M
+#cd /mnt/sdb/genetics/ancestry_pipeline_theodata
+
+python RunRFMix.py -e $emit \
+-w 0.2 \
+--num-threads $nodesize \
+--use-reference-panels-in-EM \
+--forward-backward \
+PopPhased \
+"$alleles"_chr"$PBS_ARRAYID".alleles \
+"$classes".classes \
+"$alleles"_chr"$PBS_ARRAYID".snp_locations \
+-o "$alleles"_chr"$PBS_ARRAYID".rfmix
